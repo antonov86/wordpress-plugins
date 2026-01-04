@@ -1,0 +1,330 @@
+<?php
+/*
+Plugin Name: Beaphar XML Importer
+Description: Imports and updates Beaphar products from XML feed daily.
+Version: 1.0
+Author: Anton Antonov
+*/
+
+
+if (!defined('ABSPATH')) exit;
+
+// ========================
+// SCHEDULED IMPORT SETUP
+// ========================
+
+register_activation_hook(__FILE__, 'beaphar_schedule_daily_event');
+function beaphar_schedule_daily_event() {
+    if (!wp_next_scheduled('beaphar_daily_stock_update')) {
+        $timezone = new DateTimeZone(get_option('timezone_string') ?: 'Europe/Sofia');
+        $now = new DateTime('now', $timezone);
+        $run_time = new DateTime('23:00:00', $timezone);
+        if ($run_time <= $now) $run_time->modify('+1 day');
+        if ($run_time) wp_schedule_event($run_time->getTimestamp(), 'daily', 'beaphar_daily_stock_update');
+    }
+}
+
+register_deactivation_hook(__FILE__, 'beaphar_clear_daily_event');
+function beaphar_clear_daily_event() {
+    $timestamp = wp_next_scheduled('beaphar_daily_stock_update');
+    if ($timestamp) wp_unschedule_event($timestamp, 'beaphar_daily_stock_update');
+}
+
+add_action('beaphar_daily_stock_update', function() {
+    import_beaphar_products_from_xml(true);
+});
+
+// ========================
+// ADMIN INTERFACE
+// ========================
+
+add_action('admin_menu', function() {
+    add_management_page(
+        'Beaphar Product Import',
+        'Beaphar Import',
+        'manage_options',
+        'beaphar-product-import',
+        'beaphar_import_page_callback'
+    );
+});
+
+function beaphar_import_page_callback() {
+    if (isset($_POST['run_beaphar_import']) && check_admin_referer('run_beaphar_import_action')) {
+        import_beaphar_products_from_xml(false);
+        echo '<div class="notice notice-success"><p>Beaphar import completed.</p></div>';
+    }
+
+    echo '<div class="wrap"><h1>Beaphar Product Import</h1>';
+    echo '<form method="post">';
+    wp_nonce_field('run_beaphar_import_action');
+    submit_button('Run Import Now', 'primary', 'run_beaphar_import');
+    echo '</form></div>';
+}
+
+// ========================
+// CORE IMPORT FUNCTIONS
+// ========================
+
+function format_description($description) {
+    $description = preg_replace('/([.!?])\s+/', "$1\n\n", $description);
+    $description = trim($description);
+    $description = wpautop($description, false);
+    return $description;
+}
+
+function update_product_stock($product_id, $stock) {
+    $product = wc_get_product($product_id);
+
+    if (!$product) {
+        return false;
+    }
+
+    if (!$product->get_manage_stock()) {
+        $product->set_manage_stock(true);
+    }
+
+    $product->set_stock_quantity($stock);
+    $product->set_stock_status(($stock > 0) ? 'instock' : 'outofstock');
+    $product->save();
+
+    return true;
+}
+
+function beaphar_disable_missing_products($feed_skus) {
+    $debug_messages = [];
+
+    $args = array(
+        'post_type' => 'product',
+        'posts_per_page' => -1,
+        'meta_query' => array(
+            'relation' => 'OR',
+            array(
+                'key' => 'attribute_pa_brand',
+                'value' => 'beaphar'
+            ),
+            array(
+                'key' => '_sku',
+                'compare' => 'LIKE',
+                'value' => 'BEA'
+            ),
+            array(
+                'key' => '_sku',
+                'compare' => 'REGEXP',
+                'value' => '^BEA'
+            )
+        ),
+        'fields' => 'ids',
+    );
+
+    $products = get_posts($args);
+
+    foreach ($products as $product_id) {
+        $product = wc_get_product($product_id);
+        $sku = $product->get_sku();
+
+        if (in_array($sku, $feed_skus)) {
+            continue;
+        }
+
+        wp_set_object_terms($product_id, 'Beaphar', 'pa_brand');
+
+        if (update_product_stock($product_id, 0)) {
+            $debug_messages[] = "Set missing product to out of stock: $sku";
+        } else {
+            $debug_messages[] = "Failed to update stock for: $sku";
+        }
+    }
+
+    return $debug_messages;
+}
+
+function import_beaphar_products_from_xml($is_cron = false) {
+    $debug_messages = [];
+    $feed_skus = [];
+    $xml_url = 'https://miazoo.bg/index.php?route=extension/feed/google_merchant_center';
+
+    $response = wp_remote_get($xml_url, [
+        'timeout' => 240,
+        'sslverify' => false,
+        'headers' => ['Accept-Encoding' => 'gzip']
+    ]);
+
+    if (is_wp_error($response)) {
+        $debug_messages[] = 'Beaphar Import: Failed to fetch XML - ' . $response->get_error_message();
+        if (!$is_cron) echo '<div class="notice notice-error"><p>'.implode('<br>', $debug_messages).'</p></div>';
+        return;
+    }
+
+    $xml_body = wp_remote_retrieve_body($response);
+    $xml = simplexml_load_string($xml_body);
+
+    if (!$xml || !isset($xml->channel) || !isset($xml->channel->item)) {
+        $debug_messages[] = "Beaphar Import: Invalid XML format";
+        if (!$is_cron) echo '<div class="notice notice-error"><p>'.implode('<br>', $debug_messages).'</p></div>';
+        return;
+    }
+
+    $batch_size = 5;
+    $items = [];
+    foreach ($xml->channel->item as $item) {
+        $g = $item->children('g', true);
+        if (strtolower(trim((string)$g->brand)) === 'beaphar') {
+            $sku = trim((string)$item->id);
+            if ($sku) {
+                $feed_skus[] = $sku;
+                $items[] = $item;
+            }
+        }
+    }
+
+    $total = count($items);
+    $batches = array_chunk($items, $batch_size);
+    $total_batches = count($batches);
+
+    $debug_messages[] = "Found $total Beaphar products in feed, processing in $total_batches batches";
+    if (!$is_cron) echo '<div class="notice notice-info"><p>'.implode('<br>', $debug_messages).'</p></div>';
+
+    for ($batch_offset = 0; $batch_offset < $total_batches; $batch_offset++) {
+        $batch_debug = [];
+        $batch_debug[] = "Processing batch ".($batch_offset+1)."/$total_batches";
+        if (!$is_cron) echo '<div class="notice notice-info"><p>'.implode('<br>', $batch_debug).'</p></div>';
+
+        process_beaphar_batch($batches[$batch_offset], $batch_offset, $is_cron);
+
+        if ($batch_offset < $total_batches - 1) {
+            sleep(15);
+            wp_cache_flush();
+        }
+    }
+
+    $missing_products_log = beaphar_disable_missing_products($feed_skus);
+    $debug_messages = array_merge($debug_messages, $missing_products_log);
+
+    if (!$is_cron) {
+        echo '<div class="notice notice-success"><p>'.implode('<br>', $debug_messages).'</p></div>';
+    }
+}
+
+function process_beaphar_batch($batch_items, $batch_offset, $is_cron) {
+    $debug_messages = [];
+
+    foreach ($batch_items as $item) {
+        $retry_count = 0;
+        while ($retry_count < 5) {
+            try {
+                $g = $item->children('g', true);
+                $sku = trim((string)$item->id);
+                if (!$sku) continue;
+
+                $title = sanitize_text_field((string)$item->title);
+                $description = format_description((string)$item->description);
+                $gtin = sanitize_text_field((string)$g->gtin);
+                $availability = strtolower(trim((string)$g->availability));
+                $price_raw = (string)$g->price;
+
+                preg_match('/([\d.]+)/', $price_raw, $matches);
+                $base_price = isset($matches[1]) ? floatval($matches[1]) : 0;
+                $price = ceil($base_price * 1.38 * 10) / 10;
+                $stock = ($availability === 'in stock') ? 20 : 0;
+                $product_id = wc_get_product_id_by_sku($sku);
+
+                if (class_exists('WooCommerce')) {
+                    $is_new = false;
+                    if (!$product_id) {
+                        $product = get_posts([
+                            'post_type' => 'product',
+                            'meta_key' => '_sku',
+                            'meta_value' => $sku,
+                            'post_status' => 'any',
+                            'numberposts' => 1,
+                        ]);
+                        if (!empty($product)) $product_id = $product[0]->ID;
+                    }
+
+                    if ($product_id) {
+                        wp_update_post([
+                            'ID' => $product_id,
+                            'post_title' => $title
+                        ]);
+
+                        wp_set_object_terms($product_id, 'Beaphar', 'pa_brand');
+
+                        $attributes = get_post_meta($product_id, '_product_attributes', true);
+                        if (empty($attributes)) {
+                            $attributes = array();
+                        }
+
+                        if (empty($attributes['pa_brand'])) {
+                            $attributes['pa_brand'] = array(
+                                'name' => 'pa_brand',
+                                'value' => '',
+                                'is_visible' => 1,
+                                'is_variation' => 0,
+                                'is_taxonomy' => 1,
+                            );
+                            update_post_meta($product_id, '_product_attributes', $attributes);
+                        }
+
+                        update_post_meta($product_id, '_price', $price);
+                        update_post_meta($product_id, '_regular_price', $price);
+                    } else {
+                        $post_data = [
+                            'post_title' => wp_strip_all_tags($title),
+                            'post_content' => $description,
+                            'post_status' => 'publish',
+                            'post_type' => 'product',
+                        ];
+                        $product_id = wp_insert_post($post_data);
+                        $is_new = true;
+
+                        if ($product_id) {
+                            wp_set_object_terms($product_id, 'simple', 'product_type');
+                            update_post_meta($product_id, '_sku', $sku);
+                            update_post_meta($product_id, '_manage_stock', 'yes');
+                            update_post_meta($product_id, '_gtin', $gtin);
+                            update_post_meta($product_id, '_price', $price);
+                            update_post_meta($product_id, '_regular_price', $price);
+
+                            wp_set_object_terms($product_id, 'Beaphar', 'pa_brand');
+                            update_post_meta($product_id, '_product_attributes', [
+                                'pa_brand' => [
+                                    'name' => 'pa_brand',
+                                    'value' => '',
+                                    'is_visible' => 1,
+                                    'is_variation' => 0,
+                                    'is_taxonomy' => 1,
+                                ],
+                            ]);
+                        }
+                    }
+
+                    if ($product_id) {
+                        if (update_product_stock($product_id, $stock)) {
+                            $debug_messages[] = sprintf(
+                                "%s product: %s (Stock: %d, Status: %s)",
+                                $is_new ? "Created" : "Updated",
+                                $sku,
+                                $stock,
+                                ($stock > 0) ? 'instock' : 'outofstock'
+                            );
+                        } else {
+                            $debug_messages[] = "Failed to update stock for: $sku";
+                        }
+                    }
+                }
+                break;
+            } catch (Exception $e) {
+                $retry_count++;
+                sleep(5);
+                if ($retry_count >= 5) {
+                    $debug_messages[] = "Failed to process product after 5 attempts: " . $sku;
+                }
+            }
+        }
+    }
+
+    if (function_exists('gc_collect_cycles')) gc_collect_cycles();
+    if (!$is_cron && !empty($debug_messages)) {
+        echo '<div class="notice notice-info"><p>'.implode('<br>', $debug_messages).'</p></div>';
+    }
+}
