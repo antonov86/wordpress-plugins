@@ -2,7 +2,7 @@
 /*
 Plugin Name: Anipro XML Importer
 Description: Imports and updates Anipro products from XML feed daily.
-Version: 1.0
+Version: 1.1
 Author: Anton Antonov
 */
 
@@ -59,6 +59,50 @@ function anipro_import_page_callback() {
     wp_nonce_field('run_anipro_import_action');
     submit_button('Run Import Now', 'primary', 'run_anipro_import');
     echo '</form></div>';
+}
+
+// ========================
+// IMAGE HANDLING
+// ========================
+
+/**
+ * Download an image from URL and attach it to a product as featured image
+ *
+ * @param int $product_id The product ID to attach the image to
+ * @param string $image_url The URL of the image to download
+ * @return int|false Attachment ID on success, false on failure
+ */
+function anipro_download_and_attach_image($product_id, $image_url) {
+    if (empty($image_url) || empty($product_id)) {
+        return false;
+    }
+
+    // Required for media_sideload_image
+    require_once(ABSPATH . 'wp-admin/includes/media.php');
+    require_once(ABSPATH . 'wp-admin/includes/file.php');
+    require_once(ABSPATH . 'wp-admin/includes/image.php');
+
+    // Download and attach the image
+    $attachment_id = media_sideload_image($image_url, $product_id, null, 'id');
+
+    if (is_wp_error($attachment_id)) {
+        return false;
+    }
+
+    // Set as featured image
+    set_post_thumbnail($product_id, $attachment_id);
+
+    return $attachment_id;
+}
+
+/**
+ * Check if a product has a featured image
+ *
+ * @param int $product_id The product ID to check
+ * @return bool True if product has a featured image
+ */
+function anipro_product_has_image($product_id) {
+    return has_post_thumbnail($product_id);
 }
 
 // ========================
@@ -221,6 +265,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                 $gtin = sanitize_text_field((string)$g->gtin);
                 $availability = strtolower(trim((string)$g->availability));
                 $price_raw = (string)$g->price;
+                $image_url = trim((string)$g->image_link);
 
                 preg_match('/([\d.]+)/', $price_raw, $matches);
                 $base_price = isset($matches[1]) ? floatval($matches[1]) : 0;
@@ -230,6 +275,8 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
 
                 if (class_exists('WooCommerce')) {
                     $is_new = false;
+                    $needs_image = false;
+
                     if (!$product_id) {
                         $product = get_posts([
                             'post_type' => 'product',
@@ -267,6 +314,11 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
 
                         update_post_meta($product_id, '_price', $price);
                         update_post_meta($product_id, '_regular_price', $price);
+
+                        // Check if existing product needs an image
+                        if (!anipro_product_has_image($product_id)) {
+                            $needs_image = true;
+                        }
                     } else {
                         $post_data = [
                             'post_title' => wp_strip_all_tags($title),
@@ -276,6 +328,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                         ];
                         $product_id = wp_insert_post($post_data);
                         $is_new = true;
+                        $needs_image = true; // New products always need an image
 
                         if ($product_id) {
                             wp_set_object_terms($product_id, 'simple', 'product_type');
@@ -299,13 +352,27 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                     }
 
                     if ($product_id) {
+                        // Handle image download if needed
+                        $image_status = '';
+                        if ($needs_image && !empty($image_url)) {
+                            $attachment_id = anipro_download_and_attach_image($product_id, $image_url);
+                            if ($attachment_id) {
+                                $image_status = ', Image: downloaded';
+                            } else {
+                                $image_status = ', Image: failed';
+                            }
+                        } elseif ($needs_image && empty($image_url)) {
+                            $image_status = ', Image: no URL';
+                        }
+
                         if (update_product_stock($product_id, $stock)) {
                             $debug_messages[] = sprintf(
-                                "%s product: %s (Stock: %d, Status: %s)",
+                                "%s product: %s (Stock: %d, Status: %s%s)",
                                 $is_new ? "Created" : "Updated",
                                 $sku,
                                 $stock,
-                                ($stock > 0) ? 'instock' : 'outofstock'
+                                ($stock > 0) ? 'instock' : 'outofstock',
+                                $image_status
                             );
                         } else {
                             $debug_messages[] = "Failed to update stock for: $sku";
