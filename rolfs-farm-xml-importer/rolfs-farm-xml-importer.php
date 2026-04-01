@@ -301,9 +301,6 @@ function process_rolfs_batch($batch_items, $batch_offset, $is_cron) {
                             update_post_meta($product_id, '_product_attributes', $attributes);
                         }
 
-                        update_post_meta($product_id, '_price', $price);
-                        update_post_meta($product_id, '_regular_price', $price);
-
                         // Check if existing product needs an image
                         if (!rolfs_product_has_image($product_id)) {
                             $needs_image = true;
