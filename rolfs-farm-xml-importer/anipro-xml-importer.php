@@ -13,25 +13,25 @@ if (!defined('ABSPATH')) exit;
 // SCHEDULED IMPORT SETUP
 // ========================
 
-register_activation_hook(__FILE__, 'anipro_schedule_daily_event');
-function anipro_schedule_daily_event() {
-    if (!wp_next_scheduled('anipro_daily_stock_update')) {
+register_activation_hook(__FILE__, 'rolfs_schedule_daily_event');
+function rolfs_schedule_daily_event() {
+    if (!wp_next_scheduled('rolfs_daily_stock_update')) {
         $timezone = new DateTimeZone(get_option('timezone_string') ?: 'Europe/Sofia');
         $now = new DateTime('now', $timezone);
         $run_time = new DateTime('23:00:00', $timezone);
         if ($run_time <= $now) $run_time->modify('+1 day');
-        if ($run_time) wp_schedule_event($run_time->getTimestamp(), 'daily', 'anipro_daily_stock_update');
+        if ($run_time) wp_schedule_event($run_time->getTimestamp(), 'daily', 'rolfs_daily_stock_update');
     }
 }
 
-register_deactivation_hook(__FILE__, 'anipro_clear_daily_event');
-function anipro_clear_daily_event() {
-    $timestamp = wp_next_scheduled('anipro_daily_stock_update');
-    if ($timestamp) wp_unschedule_event($timestamp, 'anipro_daily_stock_update');
+register_deactivation_hook(__FILE__, 'rolfs_clear_daily_event');
+function rolfs_clear_daily_event() {
+    $timestamp = wp_next_scheduled('rolfs_daily_stock_update');
+    if ($timestamp) wp_unschedule_event($timestamp, 'rolfs_daily_stock_update');
 }
 
-add_action('anipro_daily_stock_update', function() {
-    import_anipro_products_from_xml(true);
+add_action('rolfs_daily_stock_update', function() {
+    import_rolfs_products_from_xml(true);
 });
 
 // ========================
@@ -40,24 +40,24 @@ add_action('anipro_daily_stock_update', function() {
 
 add_action('admin_menu', function() {
     add_management_page(
-        'Anipro Product Import',
-        'Anipro Import',
+        'Rolf'''s Farm Product Import',
+        'Rolf'''s Farm Import',
         'manage_options',
-        'anipro-product-import',
-        'anipro_import_page_callback'
+        'rolfs-product-import',
+        'rolfs_import_page_callback'
     );
 });
 
-function anipro_import_page_callback() {
-    if (isset($_POST['run_anipro_import']) && check_admin_referer('run_anipro_import_action')) {
-        import_anipro_products_from_xml(false);
-        echo '<div class="notice notice-success"><p>Anipro import completed.</p></div>';
+function rolfs_import_page_callback() {
+    if (isset($_POST['run_rolfs_import']) && check_admin_referer('run_rolfs_import_action')) {
+        import_rolfs_products_from_xml(false);
+        echo '<div class="notice notice-success"><p>Rolf'''s Farm import completed.</p></div>';
     }
 
-    echo '<div class="wrap"><h1>Anipro Product Import</h1>';
+    echo '<div class="wrap"><h1>Rolf'''s Farm Product Import</h1>';
     echo '<form method="post">';
-    wp_nonce_field('run_anipro_import_action');
-    submit_button('Run Import Now', 'primary', 'run_anipro_import');
+    wp_nonce_field('run_rolfs_import_action');
+    submit_button('Run Import Now', 'primary', 'run_rolfs_import');
     echo '</form></div>';
 }
 
@@ -72,7 +72,7 @@ function anipro_import_page_callback() {
  * @param string $image_url The URL of the image to download
  * @return int|false Attachment ID on success, false on failure
  */
-function anipro_download_and_attach_image($product_id, $image_url) {
+function rolfs_download_and_attach_image($product_id, $image_url) {
     if (empty($image_url) || empty($product_id)) {
         return false;
     }
@@ -101,7 +101,7 @@ function anipro_download_and_attach_image($product_id, $image_url) {
  * @param int $product_id The product ID to check
  * @return bool True if product has a featured image
  */
-function anipro_product_has_image($product_id) {
+function rolfs_product_has_image($product_id) {
     return has_post_thumbnail($product_id);
 }
 
@@ -134,28 +134,18 @@ function update_product_stock($product_id, $stock) {
     return true;
 }
 
-function anipro_disable_missing_products($feed_skus) {
+function rolfs_disable_missing_products($feed_skus) {
     $debug_messages = [];
 
     $args = array(
         'post_type' => 'product',
         'posts_per_page' => -1,
-        'meta_query' => array(
-            'relation' => 'OR',
+        'tax_query' => array(
             array(
-                'key' => 'attribute_pa_brand',
-                'value' => 'anipro'
+                'taxonomy' => 'pa_brand',
+                'field'    => 'name',
+                'terms'    => "Rolf's Farm",
             ),
-            array(
-                'key' => '_sku',
-                'compare' => 'LIKE',
-                'value' => 'ANI'
-            ),
-            array(
-                'key' => '_sku',
-                'compare' => 'REGEXP',
-                'value' => '^ANI'
-            )
         ),
         'fields' => 'ids',
     );
@@ -170,7 +160,7 @@ function anipro_disable_missing_products($feed_skus) {
             continue;
         }
 
-        wp_set_object_terms($product_id, 'Anipro', 'pa_brand');
+        wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
 
         if (update_product_stock($product_id, 0)) {
             $debug_messages[] = "Set missing product to out of stock: $sku";
@@ -182,7 +172,7 @@ function anipro_disable_missing_products($feed_skus) {
     return $debug_messages;
 }
 
-function import_anipro_products_from_xml($is_cron = false) {
+function import_rolfs_products_from_xml($is_cron = false) {
     $debug_messages = [];
     $feed_skus = [];
     $xml_url = 'https://miazoo.bg/index.php?route=extension/feed/google_merchant_center';
@@ -194,7 +184,7 @@ function import_anipro_products_from_xml($is_cron = false) {
     ]);
 
     if (is_wp_error($response)) {
-        $debug_messages[] = 'Anipro Import: Failed to fetch XML - ' . $response->get_error_message();
+        $debug_messages[] = 'Rolf's Farm Import: Failed to fetch XML - ' . $response->get_error_message();
         if (!$is_cron) echo '<div class="notice notice-error"><p>'.implode('<br>', $debug_messages).'</p></div>';
         return;
     }
@@ -203,7 +193,7 @@ function import_anipro_products_from_xml($is_cron = false) {
     $xml = simplexml_load_string($xml_body);
 
     if (!$xml || !isset($xml->channel) || !isset($xml->channel->item)) {
-        $debug_messages[] = "Anipro Import: Invalid XML format";
+        $debug_messages[] = "Rolf's Farm Import: Invalid XML format";
         if (!$is_cron) echo '<div class="notice notice-error"><p>'.implode('<br>', $debug_messages).'</p></div>';
         return;
     }
@@ -212,7 +202,7 @@ function import_anipro_products_from_xml($is_cron = false) {
     $items = [];
     foreach ($xml->channel->item as $item) {
         $g = $item->children('g', true);
-        if (strtolower(trim((string)$g->brand)) === 'anipro') {
+        if (strtolower(trim((string)$g->brand)) === "rolf's farm") {
             $sku = trim((string)$item->id);
             if ($sku) {
                 $feed_skus[] = $sku;
@@ -225,7 +215,7 @@ function import_anipro_products_from_xml($is_cron = false) {
     $batches = array_chunk($items, $batch_size);
     $total_batches = count($batches);
 
-    $debug_messages[] = "Found $total Anipro products in feed, processing in $total_batches batches";
+    $debug_messages[] = "Found $total Rolf's Farm products in feed, processing in $total_batches batches";
     if (!$is_cron) echo '<div class="notice notice-info"><p>'.implode('<br>', $debug_messages).'</p></div>';
 
     for ($batch_offset = 0; $batch_offset < $total_batches; $batch_offset++) {
@@ -233,7 +223,7 @@ function import_anipro_products_from_xml($is_cron = false) {
         $batch_debug[] = "Processing batch ".($batch_offset+1)."/$total_batches";
         if (!$is_cron) echo '<div class="notice notice-info"><p>'.implode('<br>', $batch_debug).'</p></div>';
 
-        process_anipro_batch($batches[$batch_offset], $batch_offset, $is_cron);
+        process_rolfs_batch($batches[$batch_offset], $batch_offset, $is_cron);
 
         if ($batch_offset < $total_batches - 1) {
             sleep(15);
@@ -241,7 +231,7 @@ function import_anipro_products_from_xml($is_cron = false) {
         }
     }
 
-    $missing_products_log = anipro_disable_missing_products($feed_skus);
+    $missing_products_log = rolfs_disable_missing_products($feed_skus);
     $debug_messages = array_merge($debug_messages, $missing_products_log);
 
     if (!$is_cron) {
@@ -249,7 +239,7 @@ function import_anipro_products_from_xml($is_cron = false) {
     }
 }
 
-function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
+function process_rolfs_batch($batch_items, $batch_offset, $is_cron) {
     $debug_messages = [];
 
     foreach ($batch_items as $item) {
@@ -293,7 +283,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                             'post_title' => $title
                         ]);
 
-                        wp_set_object_terms($product_id, 'Anipro', 'pa_brand');
+                        wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
 
                         $attributes = get_post_meta($product_id, '_product_attributes', true);
                         if (empty($attributes)) {
@@ -315,7 +305,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                         update_post_meta($product_id, '_regular_price', $price);
 
                         // Check if existing product needs an image
-                        if (!anipro_product_has_image($product_id)) {
+                        if (!rolfs_product_has_image($product_id)) {
                             $needs_image = true;
                         }
                     } else {
@@ -337,7 +327,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                             update_post_meta($product_id, '_price', $price);
                             update_post_meta($product_id, '_regular_price', $price);
 
-                            wp_set_object_terms($product_id, 'Anipro', 'pa_brand');
+                            wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
                             update_post_meta($product_id, '_product_attributes', [
                                 'pa_brand' => [
                                     'name' => 'pa_brand',
@@ -354,7 +344,7 @@ function process_anipro_batch($batch_items, $batch_offset, $is_cron) {
                         // Handle image download if needed
                         $image_status = '';
                         if ($needs_image && !empty($image_url)) {
-                            $attachment_id = anipro_download_and_attach_image($product_id, $image_url);
+                            $attachment_id = rolfs_download_and_attach_image($product_id, $image_url);
                             if ($attachment_id) {
                                 $image_status = ', Image: downloaded';
                             } else {
