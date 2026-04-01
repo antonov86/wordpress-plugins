@@ -40,8 +40,8 @@ add_action('rolfs_daily_stock_update', function() {
 
 add_action('admin_menu', function() {
     add_management_page(
-        'Rolf'''s Farm Product Import',
-        'Rolf'''s Farm Import',
+        "Rolf's Farm Product Import",
+        "Rolf's Farm Import",
         'manage_options',
         'rolfs-product-import',
         'rolfs_import_page_callback'
@@ -51,10 +51,10 @@ add_action('admin_menu', function() {
 function rolfs_import_page_callback() {
     if (isset($_POST['run_rolfs_import']) && check_admin_referer('run_rolfs_import_action')) {
         import_rolfs_products_from_xml(false);
-        echo '<div class="notice notice-success"><p>Rolf'''s Farm import completed.</p></div>';
+        echo '<div class="notice notice-success"><p>Rolf\'s Farm import completed.</p></div>';
     }
 
-    echo '<div class="wrap"><h1>Rolf'''s Farm Product Import</h1>';
+    echo '<div class="wrap"><h1>Rolf\'s Farm Product Import</h1>';
     echo '<form method="post">';
     wp_nonce_field('run_rolfs_import_action');
     submit_button('Run Import Now', 'primary', 'run_rolfs_import');
@@ -160,7 +160,7 @@ function rolfs_disable_missing_products($feed_skus) {
             continue;
         }
 
-        wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
+        wp_set_object_terms($product_id, "Rolf's Farm", 'pa_brand');
 
         if (update_product_stock($product_id, 0)) {
             $debug_messages[] = "Set missing product to out of stock: $sku";
@@ -184,7 +184,7 @@ function import_rolfs_products_from_xml($is_cron = false) {
     ]);
 
     if (is_wp_error($response)) {
-        $debug_messages[] = 'Rolf's Farm Import: Failed to fetch XML - ' . $response->get_error_message();
+        $debug_messages[] = "Rolf's Farm Import: Failed to fetch XML - " . $response->get_error_message();
         if (!$is_cron) echo '<div class="notice notice-error"><p>'.implode('<br>', $debug_messages).'</p></div>';
         return;
     }
@@ -283,7 +283,7 @@ function process_rolfs_batch($batch_items, $batch_offset, $is_cron) {
                             'post_title' => $title
                         ]);
 
-                        wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
+                        wp_set_object_terms($product_id, "Rolf's Farm", 'pa_brand');
 
                         $attributes = get_post_meta($product_id, '_product_attributes', true);
                         if (empty($attributes)) {
@@ -327,7 +327,7 @@ function process_rolfs_batch($batch_items, $batch_offset, $is_cron) {
                             update_post_meta($product_id, '_price', $price);
                             update_post_meta($product_id, '_regular_price', $price);
 
-                            wp_set_object_terms($product_id, 'Rolf'''s Farm', 'pa_brand');
+                            wp_set_object_terms($product_id, "Rolf's Farm", 'pa_brand');
                             update_post_meta($product_id, '_product_attributes', [
                                 'pa_brand' => [
                                     'name' => 'pa_brand',
