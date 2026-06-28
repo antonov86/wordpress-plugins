@@ -197,24 +197,33 @@ function miazoo_run_import($is_cron = false) {
 function miazoo_process_item($item) {
     $g            = $item->children('g', true);
     $sku          = trim((string)$item->id);
-    $title        = sanitize_text_field((string)$item->title);
-    $description  = wp_kses_post((string)$item->description);
-    $gtin         = sanitize_text_field((string)$g->gtin);
-    $brand        = sanitize_text_field((string)$g->brand);
-    $image_url    = trim((string)$g->image_link);
     $availability = strtolower(trim((string)$g->availability));
-
-    preg_match('/([\d.]+)/', (string)$g->price, $m);
-    $supplier_price = isset($m[1]) ? floatval($m[1]) : 0;
-    $retail_price   = miazoo_retail_price($supplier_price);
-    $stock          = ($availability === 'in stock') ? 20 : 0;
+    $stock        = ($availability === 'in stock') ? 20 : 0;
 
     $product_id = wc_get_product_id_by_sku($sku);
-    $is_new     = !$product_id;
 
-    $product = $product_id ? wc_get_product($product_id) : new WC_Product_Simple();
-    if (!$product) return "Error loading product: $sku";
+    if ($product_id) {
+        // Existing product: update stock only — title, description, price, brand are never overwritten.
+        $product = wc_get_product($product_id);
+        if (!$product) return "Error loading product: $sku";
+        $product->set_manage_stock(true);
+        $product->set_stock_quantity($stock);
+        $product->set_stock_status($stock > 0 ? 'instock' : 'outofstock');
+        $product->save();
+        return sprintf('Stock updated: %s  qty:%d', $sku, $stock);
+    }
 
+    // New product: set everything once.
+    $title      = sanitize_text_field((string)$item->title);
+    $description = wp_kses_post((string)$item->description);
+    $gtin        = sanitize_text_field((string)$g->gtin);
+    $brand       = sanitize_text_field((string)$g->brand);
+    $image_url   = trim((string)$g->image_link);
+
+    preg_match('/([\d.]+)/', (string)$g->price, $m);
+    $retail_price = miazoo_retail_price(isset($m[1]) ? floatval($m[1]) : 0);
+
+    $product = new WC_Product_Simple();
     $product->set_name($title);
     $product->set_description($description);
     $product->set_sku($sku);
@@ -223,26 +232,23 @@ function miazoo_process_item($item) {
     $product->set_manage_stock(true);
     $product->set_stock_quantity($stock);
     $product->set_stock_status($stock > 0 ? 'instock' : 'outofstock');
-
-    if ($gtin) update_post_meta($product->get_id() ?: 0, '_gtin', $gtin);
-
-    // Brand attribute
-    if ($brand) {
-        $product_id_temp = $product->get_id() ?: wp_insert_post(['post_type' => 'product', 'post_status' => 'draft', 'post_title' => $title]);
-        wp_set_object_terms($product_id_temp, $brand, 'pa_brand');
-        $attrs = get_post_meta($product_id_temp, '_product_attributes', true) ?: [];
-        if (empty($attrs['pa_brand'])) {
-            $attrs['pa_brand'] = ['name' => 'pa_brand', 'value' => '', 'is_visible' => 1, 'is_variation' => 0, 'is_taxonomy' => 1];
-            update_post_meta($product_id_temp, '_product_attributes', $attrs);
-        }
-    }
-
     $product_id = $product->save();
 
-    if ($is_new && !empty($image_url)) {
+    // Set brand and GTIN after save — product ID is guaranteed real at this point.
+    if ($brand) {
+        wp_set_object_terms($product_id, $brand, 'pa_brand');
+        $attrs = get_post_meta($product_id, '_product_attributes', true) ?: [];
+        if (empty($attrs['pa_brand'])) {
+            $attrs['pa_brand'] = ['name' => 'pa_brand', 'value' => '', 'is_visible' => 1, 'is_variation' => 0, 'is_taxonomy' => 1];
+            update_post_meta($product_id, '_product_attributes', $attrs);
+        }
+    }
+    if ($gtin) update_post_meta($product_id, '_gtin', $gtin);
+
+    if (!empty($image_url)) {
         $att = miazoo_sideload_image($product_id, $image_url);
         if ($att) { $product->set_image_id($att); $product->save(); }
     }
 
-    return sprintf('%s: %s  price:%.2f  stock:%d', $is_new ? 'Created' : 'Updated', $sku, $retail_price, $stock);
+    return sprintf('Created: %s  price:%.2f  stock:%d', $sku, $retail_price, $stock);
 }
