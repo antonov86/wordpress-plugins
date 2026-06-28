@@ -224,6 +224,7 @@ function miazoo_process_item($item) {
     $retail_price = miazoo_retail_price(isset($m[1]) ? floatval($m[1]) : 0);
 
     $product = new WC_Product_Simple();
+    $product->set_status('draft');
     $product->set_name($title);
     $product->set_description($description);
     $product->set_sku($sku);
