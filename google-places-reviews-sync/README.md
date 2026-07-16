@@ -4,17 +4,35 @@ WordPress plugin that fetches Google Maps reviews via the **Places API (New)** a
 
 ## What it does
 
-- Daily WP-Cron fetches reviews from Google for a configured Place ID
-- Upserts each review into a configurable post type (`testimonials` by default), deduped by author's Google profile URI
+- Daily WP-Cron fetches reviews from Google for one or more configured Place IDs
+- Upserts each review into a configurable post type (`testimonials` by default), deduped by author's Google profile URI **scoped per Place ID** (the same author reviewing two locations yields one card per location)
 - Downloads the author's profile photo and attaches it as the post's featured image
-- Marks reviews inactive (rather than deleting them) when they disappear from Google's response — preserves history
-- Settings page in `Settings → Google Reviews` with a manual "Sync now" button + last-sync diagnostics
+- Marks reviews inactive (rather than deleting them) when they disappear from Google's response — preserves history. Deactivation is **per Place ID**, so one location's sync never touches another's reviews
+- Settings page in `Settings → Google Reviews` with a manual "Sync now" button + per-location last-sync diagnostics
+- Syncs in the **site's own language** and keeps **5-star reviews only** — both defaults, both configurable (see [Language and rating](#language-and-rating))
+
+### Multiple locations
+
+Set several Place IDs (separated by comma, whitespace, or newline) to populate the same testimonials post type from more than one business location — they render together in whatever template queries the CPT. Each post is tagged with `_gprs_place_id`. Example: `define( 'GPRS_PLACE_ID', 'ChIJaaa…,ChIJbbb…' );`. A single ID still works exactly as before.
+
+### Language and rating
+
+Two settings that used to be baked into the code, so a clone can be configured instead of edited:
+
+| Setting | Option | Default | Filter |
+|---|---|---|---|
+| Review language | `gprs_language_code` | the site's locale, primary subtag (`bg_BG` → `bg`) | `gprs/language_code` |
+| Minimum star rating | `gprs_min_rating` | `5` (5-star only) | `gprs/min_rating` |
+
+**Language** is a BCP-47 code — `bg`, `en`, `pt-BR`. Leave the option blank and a clone speaks its own language with zero setup; set it explicitly only for a region-specific code, or to pull reviews in a language other than the site's.
+
+**Minimum rating** clamps to 1–5. Set it to `1` to take every review. A review that later drops below the threshold is marked inactive on the next sync, same as one that disappears from Google entirely.
 
 ## What it does NOT do
 
 - Does **not** register a custom post type — assumes the target CPT already exists. If yours doesn't, register it before activating (or change the target slug to `post`).
 - Does **not** render any frontend output — your theme/page builder reads the synced post type via its existing template. The plugin is data-sync only.
-- Does **not** fix Google's hard cap of **5 reviews per fetch**. This is a Places API limitation, not the plugin's. To display more than 5 you need the Google Business Profile API (separate setup, requires business-ownership verification).
+- Does **not** fix Google's hard cap of **5 reviews per fetch, per Place ID**. This is a Places API limitation, not the plugin's. (Configuring N locations therefore yields up to 5×N reviews.) To display more than 5 from a single location you need the Google Business Profile API (separate setup, requires business-ownership verification).
 
 ## Requirements
 
@@ -30,7 +48,7 @@ WordPress plugin that fetches Google Maps reviews via the **Places API (New)** a
 3. Configure either via the settings page (`Settings → Google Reviews`) or in `wp-config.php` (preferred for the API key):
    ```php
    define( 'GPRS_API_KEY',  'AIza…' );        // optional; constants override DB options
-   define( 'GPRS_PLACE_ID', 'ChIJ…' );        // optional
+   define( 'GPRS_PLACE_ID', 'ChIJ…' );        // optional; comma-separate for multiple locations
    ```
 4. Click "Sync reviews now" on the settings page to populate immediately. After that the daily cron handles refreshes.
 
@@ -58,6 +76,9 @@ The plugin writes to both standard WP fields and project-specific postmeta keys:
 ## Filters
 
 - `gprs/target_post_type` — override the configured target post type at runtime.
+- `gprs/place_ids` — array of Place IDs to sync.
+- `gprs/language_code` — BCP-47 language for review text.
+- `gprs/min_rating` — lowest star rating to sync (clamped to 1–5 afterwards).
 
 ## Gotchas (worth knowing if you fork or extend)
 
@@ -67,7 +88,7 @@ The naive call `X-Goog-FieldMask: reviews` returns **0 reviews silently** even o
 
 ### Translation defaults to user's session locale
 
-Google translates reviews to your account's language by default. The translated text is in `reviews[].text.text` with `languageCode` set accordingly. The original is in `reviews[].originalText.text`. For a Bulgarian site, **always read `originalText`** — that's what your customers wrote, not Google Translate's English rendering.
+Google translates reviews to your account's language by default. The translated text is in `reviews[].text.text` with `languageCode` set accordingly. The original is in `reviews[].originalText.text`. For a Bulgarian site, **always read `originalText`** — that's what your customers wrote, not Google Translate's English rendering. The plugin reads `originalText` first and falls back to `text`, so the `languageCode` it sends mainly affects that fallback.
 
 ### HTTP referrer restriction needs an explicit `Referer` header server-side
 

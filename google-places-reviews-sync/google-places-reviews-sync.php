@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Google Places Reviews Sync
  * Plugin URI:        https://github.com/dtp/google-places-reviews-sync
- * Description:       Fetches Google Maps reviews via the Places API (New) for a configured Place ID and syncs them into a WordPress custom post type. Daily WP-Cron, upserts on author URI hash, downloads author photos as attachments, marks inactive when reviews disappear from the API.
- * Version:           1.0.0
+ * Description:       Fetches Google Maps reviews via the Places API (New) for one or more configured Place IDs and syncs them into a WordPress custom post type. Daily WP-Cron, upserts on author URI hash, downloads author photos as attachments, marks inactive when reviews disappear from the API.
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Domnatapeta.bg / Antonov
@@ -20,7 +20,10 @@ class GPRS_Plugin {
 	const OPTION_API_KEY      = 'gprs_api_key';
 	const OPTION_PLACE_ID     = 'gprs_place_id';
 	const OPTION_POST_TYPE    = 'gprs_target_post_type';
+	const OPTION_LANGUAGE     = 'gprs_language_code';
+	const OPTION_MIN_RATING   = 'gprs_min_rating';
 	const OPTION_LAST_SYNC    = 'gprs_last_sync';
+	const DEFAULT_MIN_RATING  = 5;
 	const CRON_HOOK           = 'gprs_daily_sync';
 	const META_AUTHOR_URI     = '_gprs_author_uri';      // dedupe key
 	const META_PUBLISH_TIME   = '_gprs_publish_time';
@@ -67,14 +70,62 @@ class GPRS_Plugin {
 		return trim( (string) get_option( self::OPTION_API_KEY, '' ) );
 	}
 
-	private function get_place_id() {
-		if ( defined( 'GPRS_PLACE_ID' ) && GPRS_PLACE_ID ) return GPRS_PLACE_ID;
-		return trim( (string) get_option( self::OPTION_PLACE_ID, '' ) );
+	/**
+	 * Configured Place IDs as an array.
+	 *
+	 * Accepts one OR several IDs from the GPRS_PLACE_ID constant (preferred) or
+	 * the gprs_place_id option, separated by comma, whitespace, or newlines.
+	 * Backward-compatible: a single ID still works. Each ID is synced
+	 * independently and its reviews are tagged with `_gprs_place_id`, so
+	 * multiple business locations populate the same testimonials CPT together.
+	 */
+	private function get_place_ids() : array {
+		$raw = ( defined( 'GPRS_PLACE_ID' ) && GPRS_PLACE_ID )
+			? (string) GPRS_PLACE_ID
+			: (string) get_option( self::OPTION_PLACE_ID, '' );
+
+		$ids = preg_split( '/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY );
+		$ids = array_values( array_unique( array_map( 'trim', (array) $ids ) ) );
+
+		return apply_filters( 'gprs/place_ids', $ids );
 	}
 
 	private function get_target_post_type() {
 		$pt = get_option( self::OPTION_POST_TYPE, 'testimonials' );
 		return apply_filters( 'gprs/target_post_type', $pt );
+	}
+
+	/**
+	 * BCP-47 language Google should return review text in.
+	 *
+	 * Defaults to the site's own locale reduced to its primary subtag
+	 * (bg_BG → bg, en_US → en), so a clone speaks its own language with no
+	 * setup. Set the option — or filter — for a region-specific code such as
+	 * pt-BR, or to pull reviews in a language other than the site's.
+	 */
+	private function get_language_code() : string {
+		$code = trim( (string) get_option( self::OPTION_LANGUAGE, '' ) );
+
+		if ( '' === $code ) {
+			$parts = explode( '_', get_locale() );
+			$code  = strtolower( $parts[0] );
+		}
+
+		return (string) apply_filters( 'gprs/language_code', $code ?: 'en' );
+	}
+
+	/**
+	 * Lowest star rating worth syncing; anything below it is skipped.
+	 *
+	 * Defaults to 5 — a testimonials carousel is marketing copy, and Google
+	 * only returns 5 reviews per location anyway. Drop it to 1 to take
+	 * everything.
+	 */
+	private function get_min_rating() : int {
+		$min = (int) get_option( self::OPTION_MIN_RATING, self::DEFAULT_MIN_RATING );
+		$min = (int) apply_filters( 'gprs/min_rating', $min );
+
+		return max( 1, min( 5, $min ) );
 	}
 
 	/* ---------------------------------------------------------------------
@@ -95,6 +146,12 @@ class GPRS_Plugin {
 		register_setting( 'gprs', self::OPTION_API_KEY );
 		register_setting( 'gprs', self::OPTION_PLACE_ID );
 		register_setting( 'gprs', self::OPTION_POST_TYPE );
+		register_setting( 'gprs', self::OPTION_LANGUAGE );
+		register_setting( 'gprs', self::OPTION_MIN_RATING, [
+			'type'              => 'integer',
+			'sanitize_callback' => 'absint',
+			'default'           => self::DEFAULT_MIN_RATING,
+		] );
 	}
 
 	public function render_settings_page() {
@@ -120,13 +177,14 @@ class GPRS_Plugin {
 						</td>
 					</tr>
 					<tr>
-						<th><label for="gprs_place_id">Google Place ID</label></th>
+						<th><label for="gprs_place_id">Google Place ID(s)</label></th>
 						<td>
 							<?php if ( $pid_locked ) : ?>
 								<em>Locked via <code>GPRS_PLACE_ID</code> constant in wp-config.php.</em>
+								<p class="description">Currently syncing <?php echo (int) count( $this->get_place_ids() ); ?> location(s): <code><?php echo esc_html( implode( ', ', $this->get_place_ids() ) ); ?></code></p>
 							<?php else : ?>
-								<input name="<?php echo esc_attr( self::OPTION_PLACE_ID ); ?>" id="gprs_place_id" type="text" class="regular-text" value="<?php echo esc_attr( get_option( self::OPTION_PLACE_ID, '' ) ); ?>">
-								<p class="description">Find via <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank">Google's Place ID Finder</a>.</p>
+								<textarea name="<?php echo esc_attr( self::OPTION_PLACE_ID ); ?>" id="gprs_place_id" class="large-text" rows="3"><?php echo esc_textarea( get_option( self::OPTION_PLACE_ID, '' ) ); ?></textarea>
+								<p class="description">One or more Place IDs — separate multiple locations with a comma, space, or new line. Each is synced into the same testimonials post type. Find via <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank">Google's Place ID Finder</a>.</p>
 							<?php endif; ?>
 						</td>
 					</tr>
@@ -135,6 +193,32 @@ class GPRS_Plugin {
 						<td>
 							<input name="<?php echo esc_attr( self::OPTION_POST_TYPE ); ?>" id="gprs_post_type" type="text" class="regular-text" value="<?php echo esc_attr( get_option( self::OPTION_POST_TYPE, 'testimonials' ) ); ?>">
 							<p class="description">Slug of the WP custom post type to write reviews into. Must already be registered.</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="gprs_language_code">Review language</label></th>
+						<td>
+							<input name="<?php echo esc_attr( self::OPTION_LANGUAGE ); ?>" id="gprs_language_code" type="text" class="small-text" value="<?php echo esc_attr( get_option( self::OPTION_LANGUAGE, '' ) ); ?>" placeholder="<?php echo esc_attr( $this->get_language_code() ); ?>">
+							<p class="description">Language Google returns review text in, as a BCP-47 code — <code>bg</code>, <code>en</code>, <code>pt-BR</code>. Leave blank to follow the site language (currently <code><?php echo esc_html( $this->get_language_code() ); ?></code>).</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="gprs_min_rating">Minimum rating</label></th>
+						<td>
+							<select name="<?php echo esc_attr( self::OPTION_MIN_RATING ); ?>" id="gprs_min_rating">
+								<?php
+								$rating_labels = [
+									5 => '5 stars only',
+									4 => '4 stars and up',
+									3 => '3 stars and up',
+									2 => '2 stars and up',
+									1 => 'All reviews',
+								];
+								foreach ( $rating_labels as $value => $label ) : ?>
+									<option value="<?php echo (int) $value; ?>" <?php selected( $this->get_min_rating(), $value ); ?>><?php echo esc_html( $label ); ?></option>
+								<?php endforeach; ?>
+							</select>
+							<p class="description">Reviews below this are skipped. A synced review that later drops below it is marked inactive on the next sync.</p>
 						</td>
 					</tr>
 				</table>
@@ -162,6 +246,13 @@ class GPRS_Plugin {
 					<?php if ( ! empty( $last['error'] ) ) : ?>
 						<tr><th>Error</th><td style="color:red"><?php echo esc_html( $last['error'] ); ?></td></tr>
 					<?php endif; ?>
+					<?php if ( ! empty( $last['places'] ) && is_array( $last['places'] ) ) : ?>
+						<tr><th>Per location</th><td>
+							<?php foreach ( $last['places'] as $pid => $p ) : ?>
+								<div><code><?php echo esc_html( $pid ); ?></code>: fetched <?php echo (int) ( $p['fetched'] ?? 0 ); ?>, created <?php echo (int) ( $p['created'] ?? 0 ); ?>, updated <?php echo (int) ( $p['updated'] ?? 0 ); ?>, inactive <?php echo (int) ( $p['deactivated'] ?? 0 ); ?><?php if ( ! empty( $p['error'] ) ) echo ' — <span style="color:red">' . esc_html( $p['error'] ) . '</span>'; ?></div>
+							<?php endforeach; ?>
+						</td></tr>
+					<?php endif; ?>
 				</table>
 			<?php else : ?>
 				<p>No syncs yet.</p>
@@ -188,10 +279,10 @@ class GPRS_Plugin {
 	 * ------------------------------------------------------------------- */
 
 	public function sync_reviews() {
-		$api_key  = $this->get_api_key();
-		$place_id = $this->get_place_id();
+		$api_key   = $this->get_api_key();
+		$place_ids = $this->get_place_ids();
 		$post_type = $this->get_target_post_type();
-		$result   = [
+		$result    = [
 			'when'        => wp_date( 'Y-m-d H:i:s' ),
 			'status'      => 'ok',
 			'fetched'     => 0,
@@ -199,9 +290,10 @@ class GPRS_Plugin {
 			'updated'     => 0,
 			'deactivated' => 0,
 			'error'       => '',
+			'places'      => [],  // per-place breakdown
 		];
 
-		if ( ! $api_key || ! $place_id ) {
+		if ( ! $api_key || ! $place_ids ) {
 			$result['status'] = 'error';
 			$result['error']  = 'API key or Place ID not configured.';
 			update_option( self::OPTION_LAST_SYNC, $result );
@@ -214,6 +306,39 @@ class GPRS_Plugin {
 			update_option( self::OPTION_LAST_SYNC, $result );
 			return;
 		}
+
+		// Sync each configured location independently. One place erroring (bad
+		// ID, transient HTTP failure) must not abort the others — record its
+		// error in the per-place breakdown and carry on.
+		$errors = [];
+		foreach ( $place_ids as $place_id ) {
+			$one = $this->sync_one_place( $place_id, $api_key, $post_type );
+			$result['places'][ $place_id ] = $one;
+			$result['fetched']     += $one['fetched'];
+			$result['created']     += $one['created'];
+			$result['updated']     += $one['updated'];
+			$result['deactivated'] += $one['deactivated'];
+			if ( ! empty( $one['error'] ) ) {
+				$errors[] = "{$place_id}: {$one['error']}";
+			}
+		}
+
+		if ( $errors ) {
+			// 'ok' only if every place succeeded; otherwise surface the failures.
+			$result['status'] = ( count( $errors ) === count( $place_ids ) ) ? 'error' : 'partial';
+			$result['error']  = implode( ' | ', $errors );
+		}
+
+		update_option( self::OPTION_LAST_SYNC, $result );
+	}
+
+	/**
+	 * Fetch + upsert reviews for a single Place ID.
+	 *
+	 * @return array{fetched:int,created:int,updated:int,deactivated:int,error:string}
+	 */
+	private function sync_one_place( string $place_id, string $api_key, string $post_type ) : array {
+		$out = [ 'fetched' => 0, 'created' => 0, 'updated' => 0, 'deactivated' => 0, 'error' => '' ];
 
 		// Field mask MUST list each subfield explicitly. `reviews` alone (or *)
 		// does NOT trigger the fetch — Google silently returns 0. Discovered
@@ -233,7 +358,7 @@ class GPRS_Plugin {
 		] );
 
 		$response = wp_remote_get(
-			"https://places.googleapis.com/v1/places/{$place_id}",
+			"https://places.googleapis.com/v1/places/{$place_id}?languageCode=" . rawurlencode( $this->get_language_code() ),
 			[
 				'timeout' => 15,
 				'headers' => [
@@ -245,39 +370,40 @@ class GPRS_Plugin {
 		);
 
 		if ( is_wp_error( $response ) ) {
-			$result['status'] = 'error';
-			$result['error']  = 'HTTP error: ' . $response->get_error_message();
-			update_option( self::OPTION_LAST_SYNC, $result );
-			return;
+			$out['error'] = 'HTTP error: ' . $response->get_error_message();
+			return $out;
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( $code !== 200 ) {
-			$result['status'] = 'error';
-			$result['error']  = "HTTP {$code}: " . ( $body['error']['message'] ?? wp_remote_retrieve_body( $response ) );
-			update_option( self::OPTION_LAST_SYNC, $result );
-			return;
+			$out['error'] = "HTTP {$code}: " . ( $body['error']['message'] ?? wp_remote_retrieve_body( $response ) );
+			return $out;
 		}
 
-		$reviews          = $body['reviews'] ?? [];
-		$result['fetched'] = count( $reviews );
-		$seen_uris        = [];
+		$reviews        = $body['reviews'] ?? [];
+		$out['fetched'] = count( $reviews );
+		$seen_uris      = [];
+		$min_rating     = $this->get_min_rating();
 
 		foreach ( $reviews as $review ) {
+			// Below the threshold: skip, and deliberately stay out of $seen_uris
+			// so an already-synced review that drops under it gets deactivated.
+			if ( (int) ( $review['rating'] ?? 0 ) < $min_rating ) continue;
 			$author_uri = $review['authorAttribution']['uri'] ?? '';
 			if ( ! $author_uri ) continue;
 			$seen_uris[] = $author_uri;
 			$op = $this->upsert_review( $review, $post_type, $place_id );
-			if ( $op === 'created' ) $result['created']++;
-			if ( $op === 'updated' ) $result['updated']++;
+			if ( $op === 'created' ) $out['created']++;
+			if ( $op === 'updated' ) $out['updated']++;
 		}
 
-		// Mark posts inactive that didn't appear in this fetch.
-		$result['deactivated'] = $this->deactivate_missing( $post_type, $place_id, $seen_uris );
+		// Mark this place's posts inactive that didn't appear in this fetch.
+		// Scoped per place_id, so other locations are never touched.
+		$out['deactivated'] = $this->deactivate_missing( $post_type, $place_id, $seen_uris );
 
-		update_option( self::OPTION_LAST_SYNC, $result );
+		return $out;
 	}
 
 	/**
@@ -293,15 +419,21 @@ class GPRS_Plugin {
 		$publish_iso = $review['publishTime'] ?? '';
 		$body_orig   = $review['originalText']['text'] ?? ( $review['text']['text'] ?? '' );
 
-		// Find existing post by author URI.
+		// Find existing post by author URI *within this place*. Scoping by
+		// place_id means the same author reviewing two locations yields one
+		// card per location, instead of the second place's sync hijacking the
+		// first place's post (and flipping its _gprs_place_id).
 		$existing = get_posts( [
 			'post_type'      => $post_type,
 			'post_status'    => 'any',
 			'posts_per_page' => 1,
-			'meta_key'       => self::META_AUTHOR_URI,
-			'meta_value'     => $author_uri,
 			'fields'         => 'ids',
 			'no_found_rows'  => true,
+			'meta_query'     => [
+				'relation' => 'AND',
+				[ 'key' => self::META_AUTHOR_URI, 'value' => $author_uri ],
+				[ 'key' => self::META_PLACE_ID,   'value' => $place_id ],
+			],
 		] );
 		$existing_id = $existing[0] ?? 0;
 
