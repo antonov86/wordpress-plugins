@@ -2,7 +2,7 @@
 /*
 Plugin Name: Miazoo Importer
 Description: Imports and updates products from Miazoo.bg Google Merchant Center XML feed daily.
-Version: 2.5.1
+Version: 2.10.0
 Author: Anton Antonov
 */
 
@@ -14,14 +14,9 @@ function miazoo_clean_desc($html) {
     // Remove MS-Word conditional comments (<!--[if !supportLists]-->…) and any HTML comments.
     $html = preg_replace('/<!--.*?-->/su', '', $html);
 
-    // Replace <br> (incl. attributed variants like <br data-start="…"> that ChatGPT/
-    // Docs paste) with a space. These are line-wrap artifacts frozen at the source
-    // document's width — kept, they make the description render at ~half page width.
-    // Paragraph structure lives in <p> tags, so no <br> is needed for layout.
-    $html = preg_replace('#<br\b[^>]*>#i', ' ', $html);
-
     $allowed = [
         'p'      => [],
+        'br'     => [],
         'strong' => [],
         'b'      => [],
         'em'     => [],
@@ -90,6 +85,106 @@ define('MIAZOO_CATEGORY_MAP', [
     'Кучета > Обучение и навици'                                  => 402,  // Пелени за кучета (approx: trainer spray)
     'Котки > Котешка тоалетна'                                    => 472,  // Съдове за котешка тоалетна
     'Други > за дома'                                            => 567,  // За стопаните (approx: home gadget)
+
+    // ── sera (aquarium / terrarium) — added 2026-07-15 ──
+    'Акваристика > Филтри и пълнежи'                                       => 513,
+    'Акваристика > резервни части > аквариумно оборудване'                 => 528,
+    'Акваристика > резервни части'                                         => 528,
+    'Акваристика > резервни части > езерно оборудване'                     => 527,
+    'Акваристика > Храни > на гранули'                                     => 505,
+    'Акваристика > Храни > на люспи'                                       => 504,
+    'Акваристика > Храни > на таблетки и други'                            => 507,
+    'Акваристика > Храни > лиофилизирани'                                  => 506,
+    'Акваристика > Езерни риби > храни'                                    => 523,
+    'Акваристика > Езерни риби > препарати'                                => 525,
+    'Акваристика > Езерни риби > oборудване и филтрация'                   => 524,
+    'Акваристика > Препарати за аквариум > сладководни аквариуми'          => 509,
+    'Акваристика > Препарати за аквариум > поддръжка на соленоводни'       => 510,
+    'Акваристика > Препарати за дезинфекция'                               => 508,
+    'Акваристика > За растенията'                                          => 512,
+    'Акваристика > Тестове'                                                => 511,
+    'Акваристика > Оборудване и декорация'                                 => 516,
+    'Акваристика > Оборудване и декорация > нагреватели, осветление'       => 518,
+    'Акваристика > Оборудване и декорация > аксесоари'                     => 517,
+    'Акваристика > Оборудване и декорация > помпи за вода, въздух и вълни'  => 519,
+    'Терариумни животни > Храни'                                           => 556,
+    'Терариумни животни > Оборудване > осветление'                         => 561,
+    'Терариумни животни > Постелки за терариум'                            => 564,
+
+    // ── Its My Dog — added 2026-07-15 ──
+    'Котки > Храни > лакомства за котки'                                   => 470,
+
+    // ── Beaphar (care / vitamins; anti-parasite is skipped globally) — added 2026-07-15 ──
+    'Котки > Витамини и добавки за котки > хранителни добавки за котки'     => 674,
+    'Котки > Витамини и добавки за котки > витамини'                       => 674,
+    'Кучета > Витамини и добавки за кучета > витамини'                     => 673,
+    'Кучета > Витамини и добавки за кучета > хранителни добавки > сухо мляко'          => 673,
+    'Кучета > Витамини и добавки за кучета > хранителни добавки > други добавки'       => 673,
+    'Кучета > Витамини и добавки за кучета > хранителни добавки > добавки за храносмилане' => 673,
+    'Кучета > Козметика и грижа > шампоани и козметика'                    => 406,
+    'Кучета > Козметика и грижа > дентална хигиена'                        => 406,
+    'Кучета > Козметика и грижа > грижа за очи и уши'                      => 406,
+    'Кучета > Козметика и грижа > успокояващи продукти'                    => 453,
+    'Кучета > Козметика и грижа'                                           => 406,
+    'Котки > Козметика и грижа > успокояващи продукти'                     => 486,
+    'Котки > Козметика и грижа > продукти за навици'                       => 486,
+    'Котки > Козметика и грижа > шампоани за котки'                        => 485,
+    'Малки животни > Храни'                                               => 531,
+    'Малки животни > Козметика и грижа'                                    => 543,
+    'Малки животни > Лакомства, сено и добавки'                            => 536,
+    'Птици > Храни за птици'                                               => 546,
+    'Птици > Лакомства и добавки'                                          => 547,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници > от изкуствена лента' => 430,
+    'Котки > Котешка тоалетна > ароматизатори'                             => 480,
+    'Кучета > Хигиена > препарати за почистване'                          => 405,
+    'Терариумни животни > Витамини и добавки'                              => 563,
+
+    // ── anipro (dog/cat walk accessories + toys; house brand) — added 2026-07-15 ──
+    'Кучета > Аксесоари за разходка > нашийници > от изкуствена лента'                => 436,
+    'Кучета > Аксесоари за разходка > нашийници > от Еко текстил'                     => 433,
+    'Кучета > Аксесоари за разходка > нашийници > от кожа'                            => 434,
+    'Кучета > Аксесоари за разходка > нашийници > от метал'                           => 435,
+    'Кучета > Аксесоари за разходка > нагръдници'                                     => 438,
+    'Кучета > Аксесоари за разходка > нагръдници > от Еко текстил'                    => 439,
+    'Кучета > Аксесоари за разходка > нагръдници > от изкуствена лента'               => 441,
+    'Кучета > Аксесоари за разходка > нагръдници > от кожа'                           => 440,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници'                   => 426,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници > от Еко текстил'  => 427,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници > от метал'        => 431,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници > от кожа'         => 429,
+    'Кучета > Аксесоари за разходка > поводи, карабинки и удавници > от въже'         => 681,
+    'Кучета > Аксесоари за разходка > намордници'                                     => 442,
+    'Кучета > Играчки'                                                                => 444,
+    'Котки > Играчки, драскалки и аксесоари'                                          => 501,
+    'Кучета > Транспорт и клетки > аксесоари за кола'                                 => 454,
+    'Кучета > легла за кучета'                                                        => 412,
+    'Кучета > Хигиена > хигиенни торбички'                                            => 403,
+    'Птици > Къщички за птици'                                                        => 554,
+]);
+
+// Brand-specific category overrides (brand substring → product_cat term ID). Applied OVER the
+// product_type map — for brands the feed mis-classifies under a generic type.
+define('MIAZOO_BRAND_CATEGORY', [
+    'kudo' => 384,  // Kudo = cold-pressed dog food → Студено пресована храна за кучета (feed says generic "сухи храни")
+]);
+
+// Product types containing ANY of these substrings are SKIPPED entirely (never imported).
+// Anti-parasite / veterinary-medicinal products require a special registration this client
+// does not hold (client instruction 2026-07-15).
+define('MIAZOO_SKIP_PRODUCT_TYPE_CONTAINS', ['Противопаразитни']);
+
+// Categories that take the ×1.50 (accessory/equipment) markup instead of the run default.
+// sera aquarium/terrarium EQUIPMENT: filters, spare parts, heaters/lighting, pumps, pond gear,
+// aquarium equipment/decoration & accessories. Foods + conditioners/treatments/tests stay default.
+// Plus dog/cat walk accessories + toys + car/beds/bird-houses/hygiene-bags (anipro, 2026-07-15).
+define('MIAZOO_MARKUP_150_CATS', [
+    513, 528, 527, 524, 518, 519, 561, 516, 517,                 // sera equipment
+    436, 433, 434, 435,                                          // collars
+    438, 439, 441, 440,                                          // harnesses
+    426, 427, 431, 429, 681,                                     // leashes (+rope 681)
+    442,                                                         // muzzles
+    444, 501,                                                    // dog toys / cat toys
+    454, 412, 554, 403,                                          // car acc / beds / bird houses / hygiene bags
 ]);
 
 // ========================
@@ -189,7 +284,7 @@ function miazoo_admin_page() {
                     <th>Price rounding (EUR)</th>
                     <td>
                         <select name="price_round">
-                            <?php foreach (['0.01','0.10','0.50','1.00'] as $r): ?>
+                            <?php foreach (['0.01','0.10','0.50','1.00','charm'] as $r): ?>
                                 <option value="<?php echo $r; ?>" <?php selected($price_round, $r); ?>><?php echo $r; ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -212,10 +307,35 @@ function miazoo_admin_page() {
 // HELPERS
 // ========================
 
-function miazoo_retail_price($supplier_price) {
-    $markup = get_option('miazoo_markup', MIAZOO_MARKUP_DEFAULT);
-    $round  = floatval(get_option('miazoo_price_round', '0.10'));
+// Markup for a feed item, chosen by its mapped category: equipment/accessory categories
+// (MIAZOO_MARKUP_150_CATS) → ×1.50, everything else → the run default (miazoo_markup option).
+function miazoo_markup_for_item($item) {
+    $default = (float) get_option('miazoo_markup', MIAZOO_MARKUP_DEFAULT);
+    $g       = $item->children('g', true);
+    $ptype   = trim((string) $g->product_type);
+    $map     = MIAZOO_CATEGORY_MAP;
+    $cat_id  = ($ptype !== '' && isset($map[$ptype])) ? (int) $map[$ptype] : 0;
+    return ($cat_id && in_array($cat_id, MIAZOO_MARKUP_150_CATS, true)) ? 1.50 : $default;
+}
+
+function miazoo_retail_price($supplier_price, $markup = null) {
+    if ($markup === null) {
+        $markup = isset($GLOBALS['miazoo_item_markup'])
+            ? (float) $GLOBALS['miazoo_item_markup']
+            : (float) get_option('miazoo_markup', MIAZOO_MARKUP_DEFAULT);
+    }
+    $round  = get_option('miazoo_price_round', '0.10');
     $raw    = floatval($supplier_price) * $markup;
+
+    // Charm rounding: round UP to the next price ending in .X9 (…09, .19, .29 … .99).
+    // e.g. 12.10 → 12.19, 12.00 → 12.09, 12.95 → 12.99.
+    if ($round === 'charm') {
+        $cents  = (int) ceil($raw * 100 - 0.001);   // whole cents, rounded up
+        $cents += (9 - $cents % 10);                 // bump to the next cents digit 9
+        return $cents / 100;
+    }
+
+    $round = floatval($round);
     if ($round <= 0) return round($raw, 2);
     return ceil($raw / $round) * $round;
 }
@@ -281,6 +401,21 @@ function miazoo_opakovka_term($qty) {
 }
 
 // Shared post-save setup: category, brand attribute, GTIN, featured image.
+// Normalise supplier brand variants (e.g. "Wanpy Dry", "Piper Dry Cat", "flexi FUN")
+// to a single canonical brand name for the product_brand taxonomy.
+function miazoo_canonical_brand($raw) {
+    $b   = strtolower($raw);
+    $map = [
+        'wanpy' => 'Wanpy', 'piper' => 'Piper', 'animonda' => 'Animonda', 'flexi' => 'Flexi', 'savic' => 'Savic',
+        'luger' => "Luger's", 'chicopee' => 'Chicopee', 'wolfsblut' => 'Wolfsblut', 'integra' => 'Integra',
+        'wildfull' => 'Wildfull', 'pet comfort' => 'Pet Comfort', '4vets' => '4Vets', 'kudo' => 'Kudo',
+    ];
+    foreach ($map as $needle => $canonical) {
+        if (strpos($b, $needle) !== false) return $canonical;
+    }
+    return trim($raw); // unknown brand → store as-is; add to the map to normalise
+}
+
 function miazoo_attach_meta($product_id, $item, &$product) {
     $g            = $item->children('g', true);
     $brand        = sanitize_text_field((string)$g->brand);
@@ -289,17 +424,18 @@ function miazoo_attach_meta($product_id, $item, &$product) {
     $product_type = trim((string)$g->product_type);
 
     $cat_map = MIAZOO_CATEGORY_MAP;
-    if ($product_type && isset($cat_map[$product_type])) {
-        wp_set_object_terms($product_id, (int)$cat_map[$product_type], 'product_cat');
+    $cat_id  = ($product_type && isset($cat_map[$product_type])) ? (int)$cat_map[$product_type] : 0;
+    // Brand override takes precedence over the product_type map.
+    $brand_lc = strtolower($brand);
+    foreach (MIAZOO_BRAND_CATEGORY as $needle => $tid) {
+        if ($needle !== '' && strpos($brand_lc, $needle) !== false) { $cat_id = (int)$tid; break; }
+    }
+    if ($cat_id) {
+        wp_set_object_terms($product_id, $cat_id, 'product_cat');
     }
 
     if ($brand) {
-        wp_set_object_terms($product_id, $brand, 'pa_brand');
-        $attrs = get_post_meta($product_id, '_product_attributes', true) ?: [];
-        if (empty($attrs['pa_brand'])) {
-            $attrs['pa_brand'] = ['name' => 'pa_brand', 'value' => '', 'is_visible' => 1, 'is_variation' => 0, 'is_taxonomy' => 1];
-            update_post_meta($product_id, '_product_attributes', $attrs);
-        }
+        wp_set_object_terms($product_id, miazoo_canonical_brand($brand), 'product_brand');
     }
 
     if ($gtin) update_post_meta($product_id, '_gtin', $gtin);
@@ -341,6 +477,10 @@ function miazoo_run_import($is_cron = false) {
         if ($brand_filter && strpos($brand, $brand_filter) === false) continue;
         $sku = trim((string)$item->sku);
         if (!$sku || in_array($sku, $skip_skus, true)) continue;
+        $ptype = trim((string)$g->product_type);
+        foreach (MIAZOO_SKIP_PRODUCT_TYPE_CONTAINS as $needle) {
+            if ($needle !== '' && mb_strpos($ptype, $needle) !== false) continue 2; // skip anti-parasite etc.
+        }
         $items[] = $item;
     }
 
@@ -357,6 +497,7 @@ function miazoo_run_import($is_cron = false) {
 
 function miazoo_process_item($item) {
     $g            = $item->children('g', true);
+    $GLOBALS['miazoo_item_markup'] = miazoo_markup_for_item($item); // per-item markup (category-aware)
     $sku          = trim((string)$item->sku);
     $availability = strtolower(trim((string)$g->availability));
     $stock        = ($availability === 'in stock') ? 20 : 0;
