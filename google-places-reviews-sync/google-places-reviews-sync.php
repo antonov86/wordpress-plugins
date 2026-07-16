@@ -3,7 +3,7 @@
  * Plugin Name:       Google Places Reviews Sync
  * Plugin URI:        https://github.com/dtp/google-places-reviews-sync
  * Description:       Fetches Google Maps reviews via the Places API (New) for one or more configured Place IDs and syncs them into a WordPress custom post type. Daily WP-Cron, upserts on author URI hash, downloads author photos as attachments, marks inactive when reviews disappear from the API.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Domnatapeta.bg / Antonov
@@ -22,6 +22,7 @@ class GPRS_Plugin {
 	const OPTION_POST_TYPE    = 'gprs_target_post_type';
 	const OPTION_LANGUAGE     = 'gprs_language_code';
 	const OPTION_MIN_RATING   = 'gprs_min_rating';
+	const OPTION_REFERER      = 'gprs_referer';
 	const OPTION_LAST_SYNC    = 'gprs_last_sync';
 	const DEFAULT_MIN_RATING  = 5;
 	const CRON_HOOK           = 'gprs_daily_sync';
@@ -115,6 +116,26 @@ class GPRS_Plugin {
 	}
 
 	/**
+	 * Referer sent with the API call, to satisfy HTTP-referrer key restrictions.
+	 *
+	 * Defaults to home_url('/'), which is correct when the key is registered for
+	 * the site's own canonical URL. Override when the key's allowed-referrer list
+	 * names a different host than home_url() returns — a www/non-www mismatch is
+	 * the usual culprit, and it surfaces as a 403 that quotes the rejected
+	 * referer back at you ("Requests from referer https://example.com/ are
+	 * blocked"), not as anything that looks like a plugin fault.
+	 */
+	private function get_referer() : string {
+		$referer = trim( (string) get_option( self::OPTION_REFERER, '' ) );
+
+		if ( '' === $referer ) {
+			$referer = home_url( '/' );
+		}
+
+		return (string) apply_filters( 'gprs/referer', $referer );
+	}
+
+	/**
 	 * Lowest star rating worth syncing; anything below it is skipped.
 	 *
 	 * Defaults to 5 — a testimonials carousel is marketing copy, and Google
@@ -147,6 +168,7 @@ class GPRS_Plugin {
 		register_setting( 'gprs', self::OPTION_PLACE_ID );
 		register_setting( 'gprs', self::OPTION_POST_TYPE );
 		register_setting( 'gprs', self::OPTION_LANGUAGE );
+		register_setting( 'gprs', self::OPTION_REFERER, [ 'sanitize_callback' => 'esc_url_raw' ] );
 		register_setting( 'gprs', self::OPTION_MIN_RATING, [
 			'type'              => 'integer',
 			'sanitize_callback' => 'absint',
@@ -219,6 +241,13 @@ class GPRS_Plugin {
 								<?php endforeach; ?>
 							</select>
 							<p class="description">Reviews below this are skipped. A synced review that later drops below it is marked inactive on the next sync.</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="gprs_referer">Referer sent to Google</label></th>
+						<td>
+							<input name="<?php echo esc_attr( self::OPTION_REFERER ); ?>" id="gprs_referer" type="text" class="regular-text" value="<?php echo esc_attr( get_option( self::OPTION_REFERER, '' ) ); ?>" placeholder="<?php echo esc_attr( home_url( '/' ) ); ?>">
+							<p class="description">Only matters if the API key has HTTP-referrer restrictions. Leave blank to send the site's own URL (<code><?php echo esc_html( home_url( '/' ) ); ?></code>). Set it to match the key's allowed referrer if that list uses a different host — e.g. <code>www.</code> when this site is bare-domain. A mismatch shows up as <em>"Requests from referer … are blocked"</em> under Last sync.</p>
 						</td>
 					</tr>
 				</table>
@@ -364,7 +393,7 @@ class GPRS_Plugin {
 				'headers' => [
 					'X-Goog-Api-Key'    => $api_key,
 					'X-Goog-FieldMask'  => $field_mask,
-					'Referer'           => home_url( '/' ),  // matches HTTP-referrer key restriction
+					'Referer'           => $this->get_referer(),  // matches HTTP-referrer key restriction
 				],
 			]
 		);

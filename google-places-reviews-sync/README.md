@@ -23,6 +23,7 @@ Two settings that used to be baked into the code, so a clone can be configured i
 |---|---|---|---|
 | Review language | `gprs_language_code` | the site's locale, primary subtag (`bg_BG` → `bg`) | `gprs/language_code` |
 | Minimum star rating | `gprs_min_rating` | `5` (5-star only) | `gprs/min_rating` |
+| Referer sent to Google | `gprs_referer` | `home_url('/')` | `gprs/referer` |
 
 **Language** is a BCP-47 code — `bg`, `en`, `pt-BR`. Leave the option blank and a clone speaks its own language with zero setup; set it explicitly only for a region-specific code, or to pull reviews in a language other than the site's.
 
@@ -93,6 +94,15 @@ Google translates reviews to your account's language by default. The translated 
 ### HTTP referrer restriction needs an explicit `Referer` header server-side
 
 `wp_remote_get()` does not auto-set `Referer`. If your API key has HTTP referrer restrictions, you must pass `Referer: home_url('/')` explicitly. The plugin already does this; if you copy-paste the fetch logic elsewhere, don't strip the header.
+
+**The www/non-www trap.** The default `Referer` is `home_url('/')`, which assumes the key's allowed-referrer list names the site's own canonical host. If the key was registered for `www.example.com` while `home_url()` returns the bare `https://example.com/`, **every** fetch 403s with `Requests from referer https://example.com/ are blocked` — the cron runs fine and nothing looks broken except that reviews silently stop updating. Two fixes, and the first is the better one:
+
+1. Add the missing host (`example.com/*`) to the key's allowed referrers in the Google Cloud console, so `home_url()` just works.
+2. Set the `gprs_referer` option to whatever the key does allow.
+
+Bit an actual site: `domnatapeta.bg` (2026-07-16) — the key allowed only `www.`, so the sync 403'd for weeks with 13 stale reviews on the page.
+
+For server-side use Google actually recommends **IP restrictions** over referrer restrictions — a referrer is trivially spoofable, so it buys little here beyond fragility.
 
 ### Reviews in the response can change between fetches
 
