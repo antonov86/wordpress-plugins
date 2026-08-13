@@ -2,7 +2,7 @@
 /*
 Plugin Name: Miazoo Importer
 Description: Imports and updates products from Miazoo.bg Google Merchant Center XML feed daily.
-Version: 2.10.0
+Version: 2.17.0
 Author: Anton Antonov
 */
 
@@ -48,8 +48,19 @@ function miazoo_clean_desc($html) {
 define('MIAZOO_FEED_URL',      'https://miazoo.bg/miazoo_b2b_feed.php');
 define('MIAZOO_MARKUP_DEFAULT', 1.30);
 
-// SKUs to always skip (wholesale assortment bundles, not retail products)
-define('MIAZOO_SKIP_SKUS', ['700173', '700174', '700175']);
+// ── BUNDLE POLICY (client rule, 2026-08-06) ────────────────────────────────────────
+// Wholesale assortment packs and promo multi-packs are NEVER sold on the site and must
+// NEVER be published — drafts only, permanently. The supplier groups them in the 7001xx
+// SKU range, but treat the *title* as the real signal: "АСОРТИМЕНТ", "ПРОМОПАКЕТ",
+// "N пакета на промоцена", or a contents list like "/6 нашийника, 8 нагръдника/".
+// Check any new 7001xx SKU by hand before an import run and add it here if it qualifies.
+// Not every 7001xx SKU is a bundle — e.g. 700183 (anipro wipes 40 бр, 1+1) is genuine retail.
+define('MIAZOO_SKIP_SKUS', [
+    '700173', '700174', '700175',                        // Piper 500 г assortment packs
+    '700176', '700177', '700178', '700179', '700180',    // anipro Soft Touch SUMMER TIME bundles
+    '700181', '700182',                                  // Rolf's Farm promo multi-packs (4 / 12 пакета)
+    '700184', '700185',                                  // Antos ПРОМОПАКЕТ ЛАКОМСТВА
+]);
 
 // Maps g:product_type feed values → WooCommerce product_cat term IDs.
 // Add rows here whenever a new brand introduces a new feed category.
@@ -159,6 +170,17 @@ define('MIAZOO_CATEGORY_MAP', [
     'Кучета > Транспорт и клетки > аксесоари за кола'                                 => 454,
     'Кучета > легла за кучета'                                                        => 412,
     'Кучета > Хигиена > хигиенни торбички'                                            => 403,
+    'Кучета > Хигиена'                                                                => 399,  // bare parent type (anipro wipes, 2026-08-06)
+
+    // ── Tier B: Simple Solution, Vet's Best, Clean Box / Relish / Lindo Cat, SmartPack — added 2026-08-10 ──
+    // All targets are categories that already existed and were empty; no new categories created.
+    'Котки > Хигиена и препарати'                                                     => 484,  // Simple Solution: Препарати против миризми от котки (category built for this brand)
+    'Други'                                                                           => 480,  // Ароматизатори за котешка тоалетна (Simple Solution litter deodorant spray)
+    'Котки > Котешка тоалетна > постелки за тоалетна'                                 => 475,  // Постелка, пясък и гранули — hand-sort into 476/477/478/479 after import
+    'Котки > Козметика и грижа > грижа за очи, уши, уста'                             => 485,  // Шампоани и грижа за козината за котки (Vet's Best dental powder)
+    'Котки > Козметика и грижа'                                                       => 485,  // bare parent type (Vet's Best ear pads)
+    'Други > за дома и магазина'                                                      => 567,  // За стопаните (SmartPack bulk bag box — review after import)
+    'Кучета > Аксесоари за разходка'                                                  => 425,  // bare parent type (flexi Multi Box). Generic on purpose: do NOT point at flexi's 424, other brands use this type too.
     'Птици > Къщички за птици'                                                        => 554,
 ]);
 
@@ -181,10 +203,12 @@ define('MIAZOO_MARKUP_150_CATS', [
     513, 528, 527, 524, 518, 519, 561, 516, 517,                 // sera equipment
     436, 433, 434, 435,                                          // collars
     438, 439, 441, 440,                                          // harnesses
-    426, 427, 431, 429, 681,                                     // leashes (+rope 681)
+    426, 427, 431, 429, 681, 430,                                // leashes (+rope 681, +PP tape 430)
+    432,                                                         // collars: bare parent (children already listed)
     442,                                                         // muzzles
     444, 501,                                                    // dog toys / cat toys
     454, 412, 554, 403,                                          // car acc / beds / bird houses / hygiene bags
+    540,                                                         // small-animal cages (Esve, 2026-08-06)
 ]);
 
 // ========================
@@ -268,8 +292,8 @@ function miazoo_admin_page() {
                     <th>Brand filter</th>
                     <td>
                         <input type="text" name="brand_filter" value="<?php echo esc_attr($brand); ?>"
-                               style="width:220px" placeholder="e.g. piper" />
-                        <p class="description">Case-insensitive substring match against <code>g:brand</code>. "piper" matches "piper", "piper dry", "piper dry cat". Leave empty to import all brands.</p>
+                               style="width:100%;max-width:640px" placeholder="e.g. piper, antos, west paw" />
+                        <p class="description">Comma-separated allow-list of case-insensitive substrings matched against <code>g:brand</code>. "piper" matches "piper", "piper dry", "piper dry cat"; "antos, esve" imports both brands in one run. Leave empty to import <strong>all</strong> brands.</p>
                     </td>
                 </tr>
                 <tr>
@@ -306,6 +330,59 @@ function miazoo_admin_page() {
 // ========================
 // HELPERS
 // ========================
+
+// The brand filter is an allow-list: a comma-separated list of case-insensitive substrings.
+// "piper" alone behaves exactly as before; "antos, esve, west paw" matches any of the three.
+// Returns [] when the option is empty (= import all brands).
+function miazoo_brand_tokens() {
+    $raw    = (string) get_option('miazoo_brand_filter', '');
+    $tokens = array_map('trim', explode(',', mb_strtolower($raw)));
+    return array_values(array_filter($tokens, function ($t) { return $t !== ''; }));
+}
+
+// True if the (already lower-cased) feed brand contains ANY of the allow-list tokens.
+function miazoo_brand_matches($brand, array $tokens) {
+    foreach ($tokens as $token) {
+        if (mb_strpos($brand, $token) !== false) return true;
+    }
+    return false;
+}
+
+// Select the feed items a run should process: brand allow-list, blocked/blank SKUs, and
+// skipped product types. SINGLE SOURCE OF TRUTH — miazoo_run_import() and any dry-run
+// tooling must both call this, so a reporting script can never drift from real behaviour.
+// $stats is filled by reference with the skip counts.
+function miazoo_select_feed_items($xml, &$stats = null) {
+    $brand_tokens = miazoo_brand_tokens();
+    $skip_skus    = MIAZOO_SKIP_SKUS;
+    $items        = [];
+    $stats        = ['scanned' => 0, 'skipped_ptype' => 0, 'skipped_sku' => 0];
+
+    foreach ($xml->channel->item as $item) {
+        $stats['scanned']++;
+        $g = $item->children('g', true);
+
+        // mb_strtolower, not strtolower: the latter is byte-based and leaves Cyrillic
+        // brands ("Вълшебната Гора", "Бурканите") uppercase, so they never match a token.
+        $brand = mb_strtolower(trim((string) $g->brand));
+        if ($brand_tokens && !miazoo_brand_matches($brand, $brand_tokens)) continue;
+
+        $sku = trim((string) $item->sku);
+        if (!$sku || in_array($sku, $skip_skus, true)) { $stats['skipped_sku']++; continue; }
+
+        $ptype = trim((string) $g->product_type);
+        foreach (MIAZOO_SKIP_PRODUCT_TYPE_CONTAINS as $needle) {
+            if ($needle !== '' && mb_strpos($ptype, $needle) !== false) {
+                $stats['skipped_ptype']++;
+                continue 2; // anti-parasite / ВЛП — never imported
+            }
+        }
+
+        $items[] = $item;
+    }
+
+    return $items;
+}
 
 // Markup for a feed item, chosen by its mapped category: equipment/accessory categories
 // (MIAZOO_MARKUP_150_CATS) → ×1.50, everything else → the run default (miazoo_markup option).
@@ -404,7 +481,7 @@ function miazoo_opakovka_term($qty) {
 // Normalise supplier brand variants (e.g. "Wanpy Dry", "Piper Dry Cat", "flexi FUN")
 // to a single canonical brand name for the product_brand taxonomy.
 function miazoo_canonical_brand($raw) {
-    $b   = strtolower($raw);
+    $b   = mb_strtolower($raw);
     $map = [
         'wanpy' => 'Wanpy', 'piper' => 'Piper', 'animonda' => 'Animonda', 'flexi' => 'Flexi', 'savic' => 'Savic',
         'luger' => "Luger's", 'chicopee' => 'Chicopee', 'wolfsblut' => 'Wolfsblut', 'integra' => 'Integra',
@@ -414,6 +491,72 @@ function miazoo_canonical_brand($raw) {
         if (strpos($b, $needle) !== false) return $canonical;
     }
     return trim($raw); // unknown brand → store as-is; add to the map to normalise
+}
+
+/**
+ * Hand the item to the SmartCartHub feed-map so filter facets are assigned at import time.
+ *
+ * Before v2.14.0 the importer never called this engine, so every import needed a manual
+ * `wp sch feed-map-apply` + visibility pass afterwards (2026-08-06: 1,309 facet assignments
+ * and 441 attribute entries had to be backfilled by hand).
+ *
+ * Two halves, and BOTH are needed:
+ *   1. SCH_Feed_Map::apply() assigns the taxonomy terms (pa_food-form / pa_diet / pa_life-stage).
+ *   2. The feed-map deliberately never writes `_product_attributes` — it only reads it, to avoid
+ *      colliding with variation selectors. Without an is_visible entry WooCommerce assigns the
+ *      terms but renders nothing in "Допълнителна информация", so we add the entries here.
+ *
+ * `pa_flavour` (Месо) is intentionally NOT handled: the rules CSV omits flavour because Zookleo
+ * owns it separately, populated from the product title. See scripts/protein-parse.php.
+ *
+ * Degrades silently if the mu-plugin is absent — the importer must not hard-depend on it.
+ */
+function miazoo_apply_feed_map($product_id, $item) {
+    if (!class_exists('SCH_Feed_Map')) return;
+
+    $g   = $item->children('g', true);
+    $sku = trim((string) $item->sku);
+
+    $payload = [
+        'brand'           => (string) $g->brand,
+        'title'           => (string) $item->title,
+        'description'     => (string) $item->description,
+        'product_type'    => (string) $g->product_type,
+        'shipping_weight' => (string) $g->shipping_weight,
+        'sku'             => $sku,
+    ];
+
+    $report = SCH_Feed_Map::apply((int) $product_id, $payload, ['dry' => false]);
+
+    // --- make whatever it committed actually visible on the product page ---
+    // Only taxonomies that actually received term slugs. SCH_Feed_Map::apply() returns a
+    // 'committed' key for a taxonomy even when its slug list is EMPTY, and blindly taking
+    // array_keys() adds is_visible entries with no terms behind them — which WooCommerce
+    // renders as blank rows in "Допълнителна информация" (e.g. a leash showing an empty
+    // "Вид храна"). Regression shipped in v2.14.0, fixed in v2.16.0.
+    $committed = [];
+    foreach ((array) ($report['committed'] ?? []) as $tax => $slugs) {
+        if (!empty($slugs)) $committed[] = $tax;
+    }
+    if (!$committed) return;
+
+    $attrs = get_post_meta($product_id, '_product_attributes', true);
+    if (!is_array($attrs)) $attrs = [];
+
+    $changed = false;
+    foreach ($committed as $tax) {
+        if (isset($attrs[$tax])) continue;          // never clobber an existing entry / variation axis
+        $attrs[$tax] = [
+            'name'         => $tax,
+            'value'        => '',
+            'position'     => count($attrs),
+            'is_visible'   => 1,
+            'is_variation' => 0,
+            'is_taxonomy'  => 1,
+        ];
+        $changed = true;
+    }
+    if ($changed) update_post_meta($product_id, '_product_attributes', $attrs);
 }
 
 function miazoo_attach_meta($product_id, $item, &$product) {
@@ -426,7 +569,7 @@ function miazoo_attach_meta($product_id, $item, &$product) {
     $cat_map = MIAZOO_CATEGORY_MAP;
     $cat_id  = ($product_type && isset($cat_map[$product_type])) ? (int)$cat_map[$product_type] : 0;
     // Brand override takes precedence over the product_type map.
-    $brand_lc = strtolower($brand);
+    $brand_lc = mb_strtolower($brand);
     foreach (MIAZOO_BRAND_CATEGORY as $needle => $tid) {
         if ($needle !== '' && strpos($brand_lc, $needle) !== false) { $cat_id = (int)$tid; break; }
     }
@@ -437,6 +580,8 @@ function miazoo_attach_meta($product_id, $item, &$product) {
     if ($brand) {
         wp_set_object_terms($product_id, miazoo_canonical_brand($brand), 'product_brand');
     }
+
+    miazoo_apply_feed_map($product_id, $item);
 
     if ($gtin) update_post_meta($product_id, '_gtin', $gtin);
 
@@ -467,25 +612,15 @@ function miazoo_run_import($is_cron = false) {
         return $log;
     }
 
-    $brand_filter = strtolower(trim(get_option('miazoo_brand_filter', '')));
-    $skip_skus    = MIAZOO_SKIP_SKUS;
-    $items        = [];
-
-    foreach ($xml->channel->item as $item) {
-        $g     = $item->children('g', true);
-        $brand = strtolower(trim((string)$g->brand));
-        if ($brand_filter && strpos($brand, $brand_filter) === false) continue;
-        $sku = trim((string)$item->sku);
-        if (!$sku || in_array($sku, $skip_skus, true)) continue;
-        $ptype = trim((string)$g->product_type);
-        foreach (MIAZOO_SKIP_PRODUCT_TYPE_CONTAINS as $needle) {
-            if ($needle !== '' && mb_strpos($ptype, $needle) !== false) continue 2; // skip anti-parasite etc.
-        }
-        $items[] = $item;
-    }
+    $brand_tokens = miazoo_brand_tokens();
+    $items        = miazoo_select_feed_items($xml, $stats);
 
     $log[] = 'Found ' . count($items) . ' matching products in feed'
-           . ($brand_filter ? " (brand contains: $brand_filter)" : ' (all brands)') . '.';
+           . ($brand_tokens
+                ? ' (brand matches any of: ' . implode(', ', $brand_tokens) . ')'
+                : ' (all brands)') . '.'
+           . sprintf(' Skipped: %d anti-parasite, %d blocked/blank SKU.',
+                     $stats['skipped_ptype'], $stats['skipped_sku']);
 
     foreach ($items as $item) {
         $log[] = miazoo_process_item($item);
